@@ -96,6 +96,81 @@
 (define-map user-work-experiences principal (list 50 uint))
 (define-map company-work-experiences (string-ascii 100) (list 100 uint))
 
+;; Input Validation Helper Functions
+
+;; Validate email format (basic check)
+(define-private (is-valid-email (email (string-ascii 100)))
+  (and 
+    (> (len email) u5)
+    (<= (len email) u100)
+    (is-some (index-of email "@"))
+  )
+)
+
+;; Validate URL format (basic check)
+(define-private (is-valid-url (url (string-ascii 200)))
+  (let ((url-len (len url)))
+    (and 
+      (> url-len u10)
+      (or 
+        (and (>= url-len u7) (is-eq (unwrap-panic (slice? url u0 u7)) "http://"))
+        (and (>= url-len u8) (is-eq (unwrap-panic (slice? url u0 u8)) "https://"))
+      )
+    )
+  )
+)
+
+;; Validate company size
+(define-private (is-valid-company-size (size (string-ascii 20)))
+  (or 
+    (is-eq size "startup")
+    (is-eq size "small")
+    (is-eq size "medium")
+    (is-eq size "large")
+    (is-eq size "enterprise")
+  )
+)
+
+;; Validate validation type
+(define-private (is-valid-validation-type (vtype (string-ascii 20)))
+  (or 
+    (is-eq vtype "colleague")
+    (is-eq vtype "manager")
+    (is-eq vtype "hr")
+    (is-eq vtype "client")
+  )
+)
+
+;; Validate work status
+(define-private (is-valid-work-status (status (string-ascii 20)))
+  (or 
+    (is-eq status "pending")
+    (is-eq status "validated")
+    (is-eq status "disputed")
+  )
+)
+
+;; Sanitize string input (remove leading/trailing spaces conceptually)
+(define-private (is-non-empty-string (input (string-ascii 500)))
+  (> (len input) u0)
+)
+
+;; Validate skills list
+(define-private (is-valid-skills-list (skills (list 10 (string-ascii 50))))
+  (let ((skills-len (len skills)))
+    (and 
+      (>= skills-len u0)
+      (<= skills-len u10)
+      (fold validate-skill-item skills true)
+    )
+  )
+)
+
+;; Validate individual skill item
+(define-private (validate-skill-item (skill (string-ascii 50)) (acc bool))
+  (and acc (> (len skill) u0) (<= (len skill) u50))
+)
+
 ;; Read-only Functions
 
 ;; Get work experience by ID
@@ -145,7 +220,6 @@
 
 ;; Count validations helper
 (define-private (count-validations-for-work (work-id uint) (acc uint))
-  ;; This is a simplified version - in practice, you'd iterate through all possible validators
   acc
 )
 
@@ -169,8 +243,16 @@
     (linkedin-profile (optional (string-ascii 200))))
   (let ((current-block stacks-block-height))
     (begin
-      (asserts! (> (len full-name) u0) ERR_INVALID_INPUT)
-      (asserts! (> (len email) u0) ERR_INVALID_INPUT)
+      ;; Validate inputs
+      (asserts! (is-non-empty-string full-name) ERR_INVALID_INPUT)
+      (asserts! (is-valid-email email) ERR_INVALID_INPUT)
+      
+      ;; Validate LinkedIn profile if provided
+      (match linkedin-profile
+        profile (asserts! (and (> (len profile) u10) (is-valid-url profile)) ERR_INVALID_INPUT)
+        true
+      )
+      
       (map-set user-profiles tx-sender {
         full-name: full-name,
         email: email,
@@ -195,9 +277,19 @@
     (size (string-ascii 20)))
   (let ((current-block stacks-block-height))
     (begin
-      (asserts! (> (len company-name) u0) ERR_INVALID_INPUT)
-      (asserts! (> (len contact-email) u0) ERR_INVALID_INPUT)
+      ;; Validate inputs
+      (asserts! (is-non-empty-string company-name) ERR_INVALID_INPUT)
+      (asserts! (is-valid-email contact-email) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string industry) ERR_INVALID_INPUT)
+      (asserts! (is-valid-company-size size) ERR_INVALID_INPUT)
       (asserts! (is-none (get-company-info company-name)) ERR_ALREADY_EXISTS)
+      
+      ;; Validate website if provided
+      (match website
+        site (asserts! (is-valid-url site) ERR_INVALID_INPUT)
+        true
+      )
+      
       (map-set companies company-name {
         verified: false,
         registered-by: tx-sender,
@@ -230,19 +322,22 @@
   )
     (begin
       ;; Validate inputs
-      (asserts! (> (len company-name) u0) ERR_INVALID_INPUT)
-      (asserts! (> (len job-title) u0) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string company-name) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string job-title) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string description) ERR_INVALID_INPUT)
       (asserts! (> start-date u0) ERR_INVALID_DATES)
+      (asserts! (< start-date current-block) ERR_INVALID_DATES)
+      (asserts! (is-valid-skills-list skills) ERR_INVALID_INPUT)
       
       ;; Validate end date if provided
       (match end-date
-        end-dt (asserts! (> end-dt start-date) ERR_INVALID_DATES)
+        end-dt (asserts! (and (> end-dt start-date) (< end-dt (+ current-block u52560))) ERR_INVALID_DATES)
         true
       )
       
       ;; Validate salary range if provided
       (match salary-range
-        salary (asserts! (>= (get max salary) (get min salary)) ERR_INVALID_INPUT)
+        salary (asserts! (and (>= (get max salary) (get min salary)) (> (get min salary) u0)) ERR_INVALID_INPUT)
         true
       )
       
@@ -290,9 +385,15 @@
     (begin
       ;; Validate inputs
       (asserts! (not (is-eq tx-sender employee)) ERR_CANNOT_SELF_VALIDATE)
-      (asserts! (<= rating u5) ERR_INVALID_INPUT)
-      (asserts! (>= rating u1) ERR_INVALID_INPUT)
-      (asserts! (> (len validation-type) u0) ERR_INVALID_INPUT)
+      (asserts! (and (<= rating u5) (>= rating u1)) ERR_INVALID_INPUT)
+      (asserts! (is-valid-validation-type validation-type) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string comments) ERR_INVALID_INPUT)
+      
+      ;; Validate validator title if provided
+      (match validator-title
+        title (asserts! (is-non-empty-string title) ERR_INVALID_INPUT)
+        true
+      )
       
       ;; Check if already validated by this user
       (asserts! (is-none (get-validation work-id tx-sender)) ERR_ALREADY_VALIDATED)
@@ -362,10 +463,14 @@
     (role (string-ascii 50)))
   (let ((current-block stacks-block-height))
     (begin
+      ;; Validate authorization
       (asserts! (or (is-eq tx-sender CONTRACT_OWNER) 
                    (is-authorized-validator tx-sender)) ERR_UNAUTHORIZED)
-      (asserts! (> (len company-name) u0) ERR_INVALID_INPUT)
-      (asserts! (> (len role) u0) ERR_INVALID_INPUT)
+      
+      ;; Validate inputs
+      (asserts! (is-non-empty-string company-name) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string role) ERR_INVALID_INPUT)
+      (asserts! (not (is-eq validator tx-sender)) ERR_INVALID_INPUT)
       
       (map-set authorized-validators validator {
         company-name: company-name,
@@ -382,8 +487,12 @@
 ;; Revoke validator authorization
 (define-public (revoke-validator (validator principal))
   (begin
+    ;; Validate authorization
     (asserts! (or (is-eq tx-sender CONTRACT_OWNER)
                  (is-authorized-validator tx-sender)) ERR_UNAUTHORIZED)
+    
+    ;; Validate input
+    (asserts! (not (is-eq validator tx-sender)) ERR_INVALID_INPUT)
     
     (match (map-get? authorized-validators validator)
       auth-record 
@@ -405,18 +514,46 @@
     (end-date (optional uint))
     (skills (optional (list 10 (string-ascii 50))))
     (is-current (optional bool)))
-  (let ((work-exp (unwrap! (get-work-experience work-id) ERR_NOT_FOUND)))
+  (let ((work-exp (unwrap! (get-work-experience work-id) ERR_NOT_FOUND))
+        (validated-job-title 
+          (match job-title
+            title 
+              (begin
+                (asserts! (is-non-empty-string title) ERR_INVALID_INPUT)
+                title
+              )
+            (get job-title work-exp)
+          ))
+        (validated-description 
+          (match description
+            desc 
+              (begin
+                (asserts! (is-non-empty-string desc) ERR_INVALID_INPUT)
+                desc
+              )
+            (get description work-exp)
+          ))
+        (validated-skills 
+          (match skills
+            skill-list 
+              (begin
+                (asserts! (is-valid-skills-list skill-list) ERR_INVALID_INPUT)
+                skill-list
+              )
+            (get skills work-exp)
+          )))
     (begin
       ;; Only the employee can update their own work experience
       (asserts! (is-eq tx-sender (get employee work-exp)) ERR_UNAUTHORIZED)
+      (asserts! (> work-id u0) ERR_INVALID_INPUT)
       
-      ;; Update fields if provided
+      ;; Update fields with validated values
       (map-set work-experiences work-id
         (merge work-exp {
-          job-title: (default-to (get job-title work-exp) job-title),
-          description: (default-to (get description work-exp) description),
+          job-title: validated-job-title,
+          description: validated-description,
           end-date: (if (is-some end-date) end-date (get end-date work-exp)),
-          skills: (default-to (get skills work-exp) skills),
+          skills: validated-skills,
           is-current: (default-to (get is-current work-exp) is-current)
         })
       )
@@ -429,7 +566,10 @@
 (define-public (dispute-work-experience (work-id uint) (reason (string-ascii 300)))
   (let ((work-exp (unwrap! (get-work-experience work-id) ERR_NOT_FOUND)))
     (begin
-      (asserts! (> (len reason) u0) ERR_INVALID_INPUT)
+      ;; Validate inputs
+      (asserts! (> work-id u0) ERR_INVALID_INPUT)
+      (asserts! (is-non-empty-string reason) ERR_INVALID_INPUT)
+      
       ;; Only allow disputes from authorized validators or contract owner
       (asserts! (or (is-eq tx-sender CONTRACT_OWNER)
                    (is-authorized-validator tx-sender)) ERR_UNAUTHORIZED)
@@ -447,7 +587,7 @@
 (define-public (set-min-validations-required (new-min uint))
   (begin
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
-    (asserts! (> new-min u0) ERR_INVALID_INPUT)
+    (asserts! (and (> new-min u0) (< new-min u10)) ERR_INVALID_INPUT)
     (var-set min-validations-required new-min)
     (ok new-min)
   )
@@ -457,7 +597,7 @@
 (define-public (set-validation-expiry-blocks (new-expiry uint))
   (begin
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
-    (asserts! (> new-expiry u0) ERR_INVALID_INPUT)
+    (asserts! (and (> new-expiry u1000) (< new-expiry u525600)) ERR_INVALID_INPUT) ;; Between ~1 day and ~10 years
     (var-set validation-expiry-blocks new-expiry)
     (ok new-expiry)
   )
@@ -468,6 +608,7 @@
   (let ((company (unwrap! (get-company-info company-name) ERR_NOT_FOUND)))
     (begin
       (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+      (asserts! (is-non-empty-string company-name) ERR_INVALID_INPUT)
       (map-set companies company-name
         (merge company {verified: true}))
       (ok company-name)
@@ -480,6 +621,7 @@
   (let ((profile (unwrap! (get-user-profile user) ERR_NOT_FOUND)))
     (begin
       (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+      (asserts! (not (is-eq user tx-sender)) ERR_INVALID_INPUT)
       (map-set user-profiles user
         (merge profile {is-verified: true}))
       (ok user)
