@@ -5,6 +5,11 @@ authors = []
 telemetry = true
 cache_dir = '.\.cache'
 requirements = []
+[contracts.Skill-Assessment]
+path = 'contracts/Skill-Assessment.clar'
+clarity_version = 3
+epoch = 3.0
+
 [contracts.Work-Achievement-Chain]
 path = 'contracts/Work-Achievement-Chain.clar'
 clarity_version = 3
